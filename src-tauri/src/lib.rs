@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(target_os = "windows")]
@@ -40,7 +40,7 @@ fn install_input_lock_hook() -> Result<(), String> {
 fn install_input_lock_hook() -> Result<(), String> { Ok(()) }
 
 #[derive(Serialize)]
-struct SearchResult { id: String, title: String, channel: String, channel_id: String, duration: String, thumbnail: String }
+struct SearchResult { id: String, title: String, channel: String, channel_id: String, duration: String, thumbnail: String, published: String, is_short: bool }
 #[derive(Serialize)]
 struct SearchPage { results: Vec<SearchResult>, cursor: Option<String> }
 #[derive(Clone, Deserialize, Serialize)]
@@ -126,7 +126,50 @@ fn unsubscribe_channel(channel: String, app: tauri::AppHandle) -> Result<(), Str
 }
 
 fn text(value: Option<&Value>) -> String {
-  value.and_then(|v| v.get("simpleText").and_then(Value::as_str).map(str::to_owned).or_else(|| v.get("runs").and_then(Value::as_array).and_then(|runs| runs.first()).and_then(|run| run.get("text")).and_then(Value::as_str).map(str::to_owned))).unwrap_or_default()
+  value.and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.get("content").and_then(Value::as_str).map(str::to_owned)).or_else(|| v.get("simpleText").and_then(Value::as_str).map(str::to_owned)).or_else(|| v.get("runs").and_then(Value::as_array).and_then(|runs| runs.first()).and_then(|run| run.get("text")).and_then(Value::as_str).map(str::to_owned))).unwrap_or_default()
+}
+
+fn published_label(value: &str) -> bool { value.to_ascii_lowercase().contains("ago") }
+fn is_channel_missing(value: &str) -> bool { let lower = value.to_ascii_lowercase(); value.is_empty() || lower.contains("views") || lower.contains("watching") || published_label(value) }
+fn fill_channel(results: &mut [SearchResult], channel: &str, channel_id: &str) { for result in results { if is_channel_missing(&result.channel) { result.channel = channel.to_owned(); } if result.channel_id.is_empty() { result.channel_id = channel_id.to_owned(); } } }
+
+fn metadata_rows(value: &Value) -> Option<&[Value]> {
+  match value {
+    Value::Object(items) => { if let Some(rows) = items.get("metadataRows").and_then(Value::as_array) { return Some(rows.as_slice()); } items.values().find_map(metadata_rows) }
+    Value::Array(items) => items.iter().find_map(metadata_rows),
+    _ => None
+  }
+}
+
+fn lockup_metadata(lockup: &Value) -> (String, String) {
+  let Some(rows) = metadata_rows(lockup) else { return (String::new(), String::new()); };
+  let mut texts = Vec::new();
+  for row in rows { if let Some(parts) = row.get("metadataParts").and_then(Value::as_array) { for part in parts { let value = text(part.get("text")); if !value.is_empty() { texts.push(value); } } } }
+  let published = texts.iter().find(|value| published_label(value)).cloned().unwrap_or_default();
+  let mut channel = rows.first().and_then(|row| row.get("metadataParts")).and_then(Value::as_array).and_then(|parts| parts.first()).map(|part| text(part.get("text"))).unwrap_or_default();
+  if is_channel_missing(&channel) { channel = texts.iter().find(|value| !is_channel_missing(value)).cloned().unwrap_or_default(); }
+  (channel, published)
+}
+
+fn overlay_duration(value: &Value) -> String { let text_value = text(value.get("text")); if text_value.is_empty() { text(Some(value)) } else { text_value } }
+fn accessibility_duration(value: &str) -> String {
+  let lower = value.to_ascii_lowercase();
+  if lower.contains("ago") { return String::new(); }
+  let index = lower.find(", hour").or_else(|| lower.find(", minute")).or_else(|| lower.find(", second"));
+  let Some(index) = index else { return String::new(); };
+  let duration = value[index + 2..].trim();
+  if duration.chars().any(|character| character.is_ascii_digit()) { duration.to_owned() } else { String::new() }
+}
+fn lockup_duration(value: &Value) -> String {
+  match value {
+    Value::Object(items) => {
+      if let Some(status) = items.get("thumbnailOverlayTimeStatusViewModel").or_else(|| items.get("thumbnailOverlayTimeStatusRenderer")).or_else(|| items.get("timeStatus")) { let duration = overlay_duration(status); if !duration.is_empty() { return duration; } }
+      if let Some(label) = items.get("accessibilityContext").and_then(|item| item.get("label")).and_then(Value::as_str) { let duration = accessibility_duration(label); if !duration.is_empty() { return duration; } }
+      items.values().find_map(|item| { let duration = lockup_duration(item); if duration.is_empty() { None } else { Some(duration) } }).unwrap_or_default()
+    }
+    Value::Array(items) => items.iter().find_map(|item| { let duration = lockup_duration(item); if duration.is_empty() { None } else { Some(duration) } }).unwrap_or_default(),
+    _ => String::new()
+  }
 }
 
 fn initial_data(html: &str) -> Option<Value> {
@@ -158,40 +201,40 @@ fn continuation(value: &Value) -> Option<String> {
 }
 
 fn browse_id(value: Option<&Value>) -> String {
-  value.and_then(|item| item.get("runs")).and_then(Value::as_array).and_then(|runs| runs.iter().find_map(|run| run.get("navigationEndpoint").and_then(|endpoint| endpoint.get("browseEndpoint")).and_then(|endpoint| endpoint.get("browseId")).and_then(Value::as_str))).unwrap_or_default().to_owned()
+  match value {
+    Some(Value::Object(items)) => {
+      if let Some(id) = items.get("navigationEndpoint").and_then(|endpoint| endpoint.get("browseEndpoint")).and_then(|endpoint| endpoint.get("browseId")).and_then(Value::as_str) { return id.to_owned(); }
+      items.values().find_map(|item| { let id = browse_id(Some(item)); if id.is_empty() { None } else { Some(id) } }).unwrap_or_default()
+    }
+    Some(Value::Array(items)) => items.iter().find_map(|item| { let id = browse_id(Some(item)); if id.is_empty() { None } else { Some(id) } }).unwrap_or_default(),
+    _ => String::new()
+  }
 }
 
-fn result_from_renderer(id: &str, title: Option<&Value>, channel: Option<&Value>, duration: Option<&Value>, thumbnail: Option<&Value>) -> SearchResult {
-  SearchResult { id: id.to_owned(), title: text(title), channel: text(channel), channel_id: browse_id(channel), duration: text(duration), thumbnail: thumbnail.and_then(|v| v.get("thumbnails")).and_then(Value::as_array).and_then(|items| items.first()).and_then(|item| item.get("url")).and_then(Value::as_str).unwrap_or_default().to_owned() }
+fn result_from_renderer(id: &str, title: Option<&Value>, channel: Option<&Value>, duration: Option<&Value>, thumbnail: Option<&Value>, published: Option<&Value>) -> SearchResult {
+  SearchResult { id: id.to_owned(), title: text(title), channel: text(channel), channel_id: browse_id(channel), duration: text(duration), thumbnail: thumbnail.and_then(|v| v.get("thumbnails")).and_then(Value::as_array).and_then(|items| items.first()).and_then(|item| item.get("url")).and_then(Value::as_str).unwrap_or_default().to_owned(), published: text(published), is_short: false }
 }
 
 fn collect_results(value: &Value, results: &mut Vec<SearchResult>, seen: &mut HashSet<String>) {
   if results.len() >= 30 { return; }
-  if let Some(renderer) = value.get("reelWatchEndpoint") {
-    let id = renderer.get("videoId").and_then(Value::as_str).unwrap_or_default();
-    if !id.is_empty() && seen.insert(id.to_owned()) {
-      let thumbnail = renderer.get("thumbnail").and_then(|item| item.get("thumbnails")).and_then(Value::as_array).and_then(|items| items.first()).and_then(|item| item.get("url")).and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"));
-      results.push(SearchResult { id: id.to_owned(), title: "YouTube Short".to_owned(), channel: String::new(), channel_id: String::new(), duration: String::new(), thumbnail });
-    }
-  }
   if let Some(renderer) = value.get("videoRenderer") {
     let id = renderer.get("videoId").and_then(Value::as_str).unwrap_or_default();
     if !id.is_empty() && seen.insert(id.to_owned()) {
-      results.push(result_from_renderer(id, renderer.get("title"), renderer.get("ownerText").or_else(|| renderer.get("longBylineText")), renderer.get("lengthText"), renderer.get("thumbnail")));
+      results.push(result_from_renderer(id, renderer.get("title"), renderer.get("ownerText").or_else(|| renderer.get("shortBylineText")).or_else(|| renderer.get("longBylineText")).or_else(|| renderer.get("bylineText")), renderer.get("lengthText"), renderer.get("thumbnail"), renderer.get("publishedTimeText").or_else(|| renderer.get("publishedText"))));
     }
   }
   if let Some(renderer) = value.get("reelItemRenderer") {
     let id = renderer.get("videoId").and_then(Value::as_str).unwrap_or_default();
-    if !id.is_empty() && seen.insert(id.to_owned()) { results.push(result_from_renderer(id, renderer.get("headline").or_else(|| renderer.get("title")), renderer.get("ownerText").or_else(|| renderer.get("longBylineText")), renderer.get("lengthText"), renderer.get("thumbnail"))); }
+    if !id.is_empty() && seen.insert(id.to_owned()) { let mut result = result_from_renderer(id, renderer.get("headline").or_else(|| renderer.get("title")), renderer.get("ownerText").or_else(|| renderer.get("shortBylineText")).or_else(|| renderer.get("longBylineText")).or_else(|| renderer.get("bylineText")), renderer.get("lengthText"), renderer.get("thumbnail"), renderer.get("publishedTimeText").or_else(|| renderer.get("publishedText"))); result.is_short = true; results.push(result); }
   }
   if let Some(renderer) = value.get("gridVideoRenderer") {
     let id = renderer.get("videoId").and_then(Value::as_str).unwrap_or_default();
-    if !id.is_empty() && seen.insert(id.to_owned()) { results.push(result_from_renderer(id, renderer.get("title"), renderer.get("shortBylineText").or_else(|| renderer.get("longBylineText")), renderer.get("lengthText"), renderer.get("thumbnail"))); }
+    if !id.is_empty() && seen.insert(id.to_owned()) { results.push(result_from_renderer(id, renderer.get("title"), renderer.get("ownerText").or_else(|| renderer.get("shortBylineText")).or_else(|| renderer.get("longBylineText")).or_else(|| renderer.get("bylineText")), renderer.get("lengthText"), renderer.get("thumbnail"), renderer.get("publishedTimeText").or_else(|| renderer.get("publishedText")))); }
   }
   if let Some(lockup) = value.get("lockupViewModel") {
     let thumbnail = lockup.get("contentImage").and_then(|item| item.get("thumbnailViewModel")).and_then(|item| item.get("image")).and_then(|item| item.get("sources")).and_then(Value::as_array).and_then(|items| items.first()).and_then(|item| item.get("url")).and_then(Value::as_str).unwrap_or_default();
     let id = thumbnail.split("/vi/").nth(1).and_then(|item| item.split('/').next()).unwrap_or_default();
-    if !id.is_empty() && seen.insert(id.to_owned()) { results.push(SearchResult { id: id.to_owned(), title: lockup.get("metadata").and_then(|item| item.get("lockupMetadataViewModel")).and_then(|item| item.get("title")).and_then(|item| item.get("content")).and_then(Value::as_str).unwrap_or_default().to_owned(), channel: String::new(), channel_id: String::new(), duration: String::new(), thumbnail: thumbnail.to_owned() }); }
+    if !id.is_empty() && seen.insert(id.to_owned()) { let metadata = lockup.get("metadata").and_then(|item| item.get("lockupMetadataViewModel")); let (channel, published) = lockup_metadata(lockup); results.push(SearchResult { id: id.to_owned(), title: text(metadata.and_then(|item| item.get("title"))), channel, channel_id: browse_id(Some(lockup)), duration: lockup_duration(lockup), thumbnail: thumbnail.to_owned(), published, is_short: false }); }
   }
   match value { Value::Array(items) => for item in items { collect_results(item, results, seen); }, Value::Object(items) => for item in items.values() { collect_results(item, results, seen); }, _ => {} }
 }
@@ -204,7 +247,7 @@ fn collect_reel_results(html: &str, results: &mut Vec<SearchResult>, seen: &mut 
       let value = &remainder[index + marker.len()..];
       let length = value.bytes().take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-').count();
       let id = &value[..length];
-      if !id.is_empty() && seen.insert(id.to_owned()) { results.push(SearchResult { id: id.to_owned(), title: "YouTube Short".to_owned(), channel: String::new(), channel_id: String::new(), duration: String::new(), thumbnail: format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg") }); }
+      if !id.is_empty() && seen.insert(id.to_owned()) { results.push(SearchResult { id: id.to_owned(), title: "YouTube Short".to_owned(), channel: String::new(), channel_id: String::new(), duration: String::new(), thumbnail: format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"), published: String::new(), is_short: true }); }
       remainder = &value[length..];
     }
   }
@@ -299,7 +342,9 @@ fn subscription_videos_sync(mut subscriptions: Vec<Subscription>) -> Result<(Sea
   let mut seen = HashSet::new();
   for subscription in &mut subscriptions {
     if subscription.channel_id.is_empty() { subscription.channel_id = channel_id_sync(&subscription.channel)?; }
+    let start = results.len();
     collect_results(&initial_data(&reqwest::blocking::Client::builder().user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36").build().map_err(|e| e.to_string())?.get(format!("https://www.youtube.com/channel/{}/videos", subscription.channel_id)).query(&[("hl", "en"), ("gl", "US")]).send().map_err(|e| format!("YouTube Home request failed: {e}"))?.error_for_status().map_err(|e| format!("YouTube Home failed: {e}"))?.text().map_err(|e| e.to_string())?).ok_or("YouTube did not return Home data")?, &mut results, &mut seen);
+    fill_channel(&mut results[start..], &subscription.channel, &subscription.channel_id);
     if results.len() >= 30 { break; }
   }
   if results.is_empty() { return Ok((search_youtube_sync("music".into(), &SearchState(Arc::new(Mutex::new(HashMap::new()))))?, subscriptions)); }
@@ -363,7 +408,8 @@ async fn load_channel_videos(channel: String, channel_id: String, app: tauri::Ap
   let resolved_id = tauri::async_runtime::spawn_blocking(move || if channel_id.is_empty() { channel_id_sync(&lookup_channel) } else { Ok(channel_id) }).await.map_err(|error| error.to_string())??;
   let resolved_channel = channel;
   let browse_id = resolved_id.clone();
-  let page = tauri::async_runtime::spawn_blocking(move || channel_tab_sync(browse_id, "Videos")).await.map_err(|error| error.to_string())??;
+  let mut page = tauri::async_runtime::spawn_blocking(move || channel_tab_sync(browse_id, "Videos")).await.map_err(|error| error.to_string())??;
+  fill_channel(&mut page.results, &resolved_channel, &resolved_id);
   let mut subscriptions = read_subscriptions(&app)?;
   if let Some(item) = subscriptions.iter_mut().find(|item| item.channel.eq_ignore_ascii_case(&resolved_channel)) { item.channel_id = resolved_id; }
   fs::write(subscriptions_path(&app)?, serde_json::to_string_pretty(&subscriptions).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
@@ -413,7 +459,7 @@ const PLAYER_GUARD: &str = r#"(function () {
   const addMobileBack = () => { const host = document.querySelector('.ytmVideoInfoVideoDetailsContainer'); if (!host || document.getElementById('yt-tauri-mobile-back')) return; document.documentElement.classList.add('yt-tauri-mobile-info'); const button = document.createElement('button'); button.id = 'yt-tauri-mobile-back'; button.type = 'button'; button.ariaLabel = 'Back to Tauritube'; button.textContent = '‹'; const place = () => { const rect = host.getBoundingClientRect(); button.style.left = `${Math.max(8, rect.left - 42)}px`; button.style.top = `${rect.top + 7}px`; }; button.addEventListener('pointerdown', event => { event.preventDefault(); event.stopImmediatePropagation(); parent.postMessage({ source: 'youtube-tauri', action: 'back' }, '*'); }, true); button.addEventListener('click', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true); let style = document.getElementById('yt-tauri-mobile-back-style'); if (!style) { style = document.createElement('style'); style.id = 'yt-tauri-mobile-back-style'; style.textContent = '.ytmVideoInfoVideoDetailsContainer{transform:translateX(46px)!important}html.yt-tauri-mobile-info .ytwPlayerTopControlsPlayerControlsTopRight[data-yt-tauri-back]::before,html.yt-tauri-mobile-info .player-controls-top-right[data-yt-tauri-back]::before{display:none!important}#yt-tauri-mobile-back{position:fixed!important;z-index:2147483647!important;display:grid!important;place-items:center!important;width:38px!important;height:38px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;color:#fff!important;font:38px/1 Arial,sans-serif!important;cursor:pointer!important;pointer-events:auto!important;transition:opacity .15s ease!important}html.yt-tauri-controls-hidden #yt-tauri-mobile-back{opacity:0!important;visibility:hidden!important;pointer-events:none!important}'; document.head.append(style); } host.parentElement?.append(button); requestAnimationFrame(place); addEventListener('resize', place, { passive: true }); };
   const addBlock = () => { const host = document.querySelector('player-top-controls.ytwPlayerTopControlsHost, .ytwPlayerTopControlsHost'); const right = host && host.querySelector('.ytwPlayerTopControlsPlayerControlsTopRight, .player-controls-top-right'); if (!right || document.getElementById('yt-tauri-block')) return; const button = document.createElement('button'); button.id = 'yt-tauri-block'; button.type = 'button'; button.ariaLabel = 'Block'; button.textContent = '⊘'; const menu = document.createElement('div'); menu.id = 'yt-tauri-block-menu'; const info = () => { const channel = document.querySelector('.ytmVideoInfoChannelTitle'); const href = channel?.getAttribute('href') || ''; return { videoId: new URL(location.href).searchParams.get('v') || location.pathname.match(/\/(?:embed|shorts)\/([^/?]+)/)?.[1] || '', channel: channel?.textContent?.trim() || '', channelId: href.match(/\/channel\/([^/?]+)/)?.[1] || '' }; }; const add = (label, action) => { const item = document.createElement('button'); item.textContent = label; item.addEventListener('click', event => { event.preventDefault(); event.stopImmediatePropagation(); parent.postMessage({ source: 'tauritube', action, ...info() }, '*'); }); menu.append(item); }; add('Block video', 'block-video'); add('Block channel', 'block-channel'); button.addEventListener('click', event => { event.preventDefault(); event.stopImmediatePropagation(); menu.classList.toggle('open'); }); let style = document.getElementById('yt-tauri-block-style'); if (!style) { style = document.createElement('style'); style.id = 'yt-tauri-block-style'; style.textContent = '.ytwPlayerTopControlsPlayerControlsTopRight,.player-controls-top-right{position:relative!important}#yt-tauri-block{width:38px;height:38px;display:grid;place-items:center;transform:translateY(4px);background:transparent;border:0;color:#fff;font:24px/1 Arial,sans-serif;cursor:pointer}#yt-tauri-block-menu{display:none;position:absolute;top:42px;right:0;z-index:2147483647;padding:5px;border-radius:6px;background:#171717;box-shadow:0 8px 22px rgba(0,0,0,.55)}#yt-tauri-block-menu.open{display:grid;gap:4px}#yt-tauri-block-menu button{padding:7px 9px;border:0;border-radius:4px;background:#2b2b2b;color:#fff;white-space:nowrap;font:12px system-ui;cursor:pointer}#yt-tauri-block-menu button:hover{background:#832222}'; document.head.append(style); } right.prepend(button, menu); };
   const addMini = () => { const right = document.querySelector('player-bottom-controls .player-controls-bottom-right'); if (!right || right.dataset.ytTauriMini) return; right.dataset.ytTauriMini = '1'; const popout = document.createElement('button'); popout.id = 'yt-tauri-popout'; popout.type = 'button'; popout.ariaLabel = 'Picture in picture'; popout.textContent = '↗'; popout.addEventListener('click', event => { event.preventDefault(); event.stopImmediatePropagation(); document.querySelector('video')?.requestPictureInPicture?.().catch(() => {}); }, true); right.prepend(popout); let style = document.getElementById('yt-tauri-mini-style'); if (!style) { style = document.createElement('style'); style.id = 'yt-tauri-mini-style'; style.textContent = '.player-controls-bottom-right[data-yt-tauri-mini]{display:flex;align-items:center}.player-controls-bottom-right[data-yt-tauri-mini]::before,#yt-tauri-popout{width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:#fff;font:25px/1 Arial,sans-serif;cursor:pointer;flex:0 0 38px;background:transparent;border:0} .player-controls-bottom-right[data-yt-tauri-mini]::before{content:"◲"}'; document.head.append(style); } right.addEventListener('click', event => { const rect = right.getBoundingClientRect(); if (event.clientX > rect.left + 42) return; event.preventDefault(); event.stopImmediatePropagation(); parent.postMessage({ source: 'youtube-tauri', action: 'mini', time: document.querySelector('video')?.currentTime || 0 }, '*'); }, true); };
-  document.addEventListener('mousedown', event => { if (event.button !== 0 || event.clientY > 170 || event.target.closest('button,a,input,[role="button"],.ytwPlayerTopControlsPlayerControlsTopRight,.player-controls-top-right')) return; parent.postMessage({ source: 'youtube-tauri', action: 'drag' }, '*'); }, true);
+  let pendingDrag; const interactive = 'button,input,textarea,select,[role="button"],[contenteditable="true"],video,iframe,player-top-controls,player-middle-controls,player-bottom-controls,yt-progress-bar,.ytp-progress-bar,.ytp-chrome-controls,.ytwPlayerTopControlsPlayerControlsTopRight,.player-controls-top-right'; const isPlayerSurface = target => target instanceof Element && !target.closest(interactive); document.addEventListener('dragstart', event => { if (isPlayerSurface(event.target)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true); document.addEventListener('mousedown', event => { if (event.button !== 0 || !isPlayerSurface(event.target)) { pendingDrag = null; return; } pendingDrag = { x: event.clientX, y: event.clientY }; }, true); document.addEventListener('mousemove', event => { if (!pendingDrag || Math.hypot(event.clientX - pendingDrag.x, event.clientY - pendingDrag.y) < 5) return; pendingDrag = null; parent.postMessage({ source: 'youtube-tauri', action: 'drag' }, '*'); }, true); document.addEventListener('mouseup', () => { pendingDrag = null; }, true);
   let refreshQueued = false; new MutationObserver(() => { if (refreshQueued) return; refreshQueued = true; requestAnimationFrame(() => { refreshQueued = false; hide(); sendShortInfo(); addBack(); addMobileBack(); addBlock(); addMini(); }); }).observe(document, { childList: true, subtree: true }); hide(); sendShortInfo(); addBack(); addMobileBack(); addBlock(); addMini(); addEventListener('message', event => { if (event.data?.source === 'tauritube' && event.data?.action === 'mini-state') document.documentElement.classList.toggle('yt-tauri-mini', Boolean(event.data.mini)); });
   let locked = false, cover, controlsSuppressed = false, controlsHideTimer; const setControlsHidden = () => document.documentElement.classList.toggle('yt-tauri-controls-hidden', locked || controlsSuppressed); const installControlsStyle = () => { if (document.getElementById('yt-tauri-controls-style')) return; const parent = document.head || document.documentElement; if (!parent) return; const style = document.createElement('style'); style.id = 'yt-tauri-controls-style'; style.textContent = '#player-control-overlay,#player-controls .ytPlayerProgressBarHost{transition:opacity .15s ease!important}html.yt-tauri-controls-hidden #player-control-overlay,html.yt-tauri-controls-hidden #player-controls .ytPlayerProgressBarHost,html.yt-tauri-mini #yt-tauri-mobile-back{opacity:0!important;visibility:hidden!important;pointer-events:none!important}'; parent.append(style); }; installControlsStyle(); document.addEventListener('DOMContentLoaded', installControlsStyle, { once: true }); const scheduleControlsHide = () => { if (locked || controlsSuppressed) return; clearTimeout(controlsHideTimer); controlsHideTimer = setTimeout(() => { document.documentElement.classList.add('yt-tauri-controls-hidden'); document.querySelector('#player-controls-a11y-toggle')?.click(); }, 300); }; document.addEventListener('pointermove', event => { if (locked || controlsSuppressed) return; document.documentElement.classList.remove('yt-tauri-controls-hidden'); if (event.target.closest('#player-controls,player-top-controls,player-middle-controls,player-bottom-controls,yt-progress-bar')) { clearTimeout(controlsHideTimer); return; } scheduleControlsHide(); }, true);
   if (new URLSearchParams(location.search).has('tauritube_shorts')) { const style = document.createElement('style'); style.textContent = 'html.yt-tauri-shorts-controls-hidden player-top-controls,html.yt-tauri-shorts-controls-hidden player-bottom-controls,html.yt-tauri-shorts-controls-hidden yt-progress-bar,html.yt-tauri-shorts-controls-hidden .ytmVideoInfoVideoDetailsContainer{opacity:0!important;visibility:hidden!important;pointer-events:none!important;transition:opacity .15s ease!important}'; document.head.append(style); let shortsControlsTimer; const hideShortsControls = () => { clearTimeout(shortsControlsTimer); document.documentElement.classList.remove('yt-tauri-shorts-controls-hidden'); shortsControlsTimer = setTimeout(() => document.documentElement.classList.add('yt-tauri-shorts-controls-hidden'), 1000); }; document.addEventListener('pointermove', hideShortsControls, true); hideShortsControls(); }
@@ -426,22 +472,6 @@ const PLAYER_GUARD: &str = r#"(function () {
   const overlayStyle = document.createElement('style'); overlayStyle.textContent = '.ytmVideoInfoOverlay.ytmVideoInfoExpanded{display:none!important}'; (document.head || document.documentElement).append(overlayStyle);
   document.addEventListener('click', event => { const target = event.target instanceof Element ? event.target.closest('.ytmVideoInfoChannelTitle,.ytmVideoInfoFlyoutChannelTitle,.ytmVideoInfoChannelAvatar') : null; if (!target) return; const link = target.closest('a.ytmVideoInfoChannelTitle') || document.querySelector('a.ytmVideoInfoChannelTitle'); const href = link?.getAttribute('href') || ''; const channelId = href.match(/\/channel\/([^/?]+)/)?.[1] || ''; const channel = link?.textContent?.trim() || document.querySelector('.ytmVideoInfoFlyoutChannelTitle')?.textContent?.trim() || ''; if (!channel && !channelId) return; event.preventDefault(); event.stopImmediatePropagation(); parent.postMessage({ source: 'youtube-tauri', action: 'open-channel', channel, channelId }, '*'); }, true);
 })();"#;
-
-#[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-  use tauri_plugin_updater::UpdaterExt;
-  let updater = app.updater().map_err(|error| error.to_string())?;
-  updater.check().await.map(|update| update.map(|item| item.version)).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn do_update(app: tauri::AppHandle) -> Result<(), String> {
-  use tauri_plugin_updater::UpdaterExt;
-  let updater = app.updater().map_err(|error| error.to_string())?;
-  let update = updater.check().await.map_err(|error| error.to_string())?.ok_or_else(|| "no_update_available".to_string())?;
-  update.download_and_install(|_, _| {}, || {}).await.map_err(|error| error.to_string())?;
-  app.restart();
-}
 
 pub fn run() {
   install_input_lock_hook().expect("Could not install the Windows-key input lock");
@@ -473,13 +503,6 @@ pub fn run() {
     window.on_window_event(move |event| { if let tauri::WindowEvent::CloseRequested { api, .. } = event { api.prevent_close(); close_window.hide().ok(); } });
     window.show()?;
     window.set_focus()?;
-    let handle = app.handle().clone();
-    tauri::async_runtime::spawn(async move {
-      use tauri_plugin_updater::UpdaterExt;
-      if let Ok(updater) = handle.updater() {
-        if let Ok(Some(update)) = updater.check().await { let _ = handle.emit("update-available", update.version); }
-      }
-    });
     Ok(())
-  }).manage(SearchState(Arc::new(Mutex::new(HashMap::new())))).plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(tauri::generate_handler![search_youtube, search_youtube_more, load_home, load_shorts, load_shorts_more, load_channel_videos, load_subscription_avatar, list_subscriptions, subscribe_channel, unsubscribe_channel, list_blocks, block_video, block_channel, unblock_item, minimize_window, hide_window, toggle_maximize, drag_window, set_input_lock, check_for_update, do_update]).run(tauri::generate_context!()).expect("error while running Tauritube");
+  }).manage(SearchState(Arc::new(Mutex::new(HashMap::new())))).invoke_handler(tauri::generate_handler![search_youtube, search_youtube_more, load_home, load_shorts, load_shorts_more, load_channel_videos, load_subscription_avatar, list_subscriptions, subscribe_channel, unsubscribe_channel, list_blocks, block_video, block_channel, unblock_item, minimize_window, hide_window, toggle_maximize, drag_window, set_input_lock]).run(tauri::generate_context!()).expect("error while running Tauritube");
 }

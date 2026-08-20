@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 
 const input = document.querySelector<HTMLInputElement>('#query')!
 const clearButton = document.querySelector<HTMLButtonElement>('#clear')!
@@ -28,7 +27,7 @@ const status = document.querySelector<HTMLElement>('#status')!
 const chrome = document.querySelector<HTMLElement>('#chrome')!
 chrome.setAttribute('data-tauri-drag-region', '')
 const sidebarPlayerStyle = document.createElement('style')
-sidebarPlayerStyle.textContent = '.playing main:has(#nav-panel.open) #chrome{display:flex!important;transform:none;opacity:1;pointer-events:auto}.playing main:has(#nav-panel.open) #stage,body.browsing main:has(#nav-panel.open) #stage{position:absolute;inset:64px 0 0 282px;width:auto;height:auto;margin:0}'
+sidebarPlayerStyle.textContent = '.playing main:has(#nav-panel.open) #chrome{display:flex!important;transform:none;opacity:1;pointer-events:auto}.playing main:has(#nav-panel.open) #stage,body.browsing main:has(#nav-panel.open) #stage{position:absolute;inset:64px 0 0 var(--nav-width);width:auto;height:auto;margin:0}'
 document.head.append(sidebarPlayerStyle)
 const subscriptionRemovalStyle = document.createElement('style')
 subscriptionRemovalStyle.textContent = '#nav-panel .subscription.confirming{grid-template-columns:30px minmax(0,1fr) auto auto!important}#nav-panel .subscription-confirm{background:#832222!important;color:#fff}'
@@ -52,6 +51,7 @@ type BlockedItem = { kind: string, value: string, label?: string, thumbnail?: st
 let blocked: BlockedItem[] = []
 let activeShort: SearchResult | undefined
 let blocking = false
+let relatedLoading = false
 const queue: SearchResult[] = []
 const queueCount = document.querySelector<HTMLElement>('#queue-count')!
 document.querySelector('#queue')!.replaceChildren('Queue:', queueCount)
@@ -61,10 +61,23 @@ document.querySelector('main')!.append(queuePanel)
 const navPanel = document.createElement('aside')
 navPanel.id = 'nav-panel'
 document.querySelector('main')!.append(navPanel)
+const navWidthKey = 'tauritube-nav-width'
+let navWidth = (() => { const value = Number(localStorage.getItem(navWidthKey)); return Number.isFinite(value) ? Math.min(420, Math.max(220, value)) : 260 })()
+function setNavWidth(value: number) { navWidth = Math.round(Math.min(420, Math.max(220, value))); document.documentElement.style.setProperty('--nav-width', `${navWidth}px`); localStorage.setItem(navWidthKey, String(navWidth)); document.querySelector('#nav-resize')?.setAttribute('aria-valuenow', String(navWidth)) }
+setNavWidth(navWidth)
+let resizingNav = false
+document.addEventListener('pointermove', event => { if (resizingNav) setNavWidth(event.clientX) })
+document.addEventListener('pointerup', () => { if (resizingNav) { resizingNav = false; document.body.classList.remove('resizing-nav') } })
+document.addEventListener('pointercancel', () => { if (resizingNav) { resizingNav = false; document.body.classList.remove('resizing-nav') } })
 navPanel.addEventListener('click', event => { if ((event.target as HTMLElement).closest('.nav-action')) pushCurrentView() }, true)
 const navScrim = document.createElement('div')
 navScrim.id = 'nav-scrim'
 document.querySelector('main')!.append(navScrim)
+const toastStack = document.createElement('div')
+toastStack.id = 'toast-stack'
+document.querySelector('main')!.append(toastStack)
+function dismissToast(toast: HTMLElement, delay: number) { if (toast.dataset.dismissed) return; toast.dataset.dismissed = 'true'; toast.classList.add('leaving'); window.setTimeout(() => toast.remove(), delay) }
+function showToast(message: string) { const toast = document.createElement('div'); toast.className = 'toast-pill'; toast.textContent = message; toastStack.append(toast); const toasts = Array.from(toastStack.children).filter((item): item is HTMLElement => item instanceof HTMLElement); for (const oldToast of toasts.slice(0, Math.max(0, toasts.length - 3))) dismissToast(oldToast, 160); window.setTimeout(() => dismissToast(toast, 260), 3400) }
 const menu = document.createElement('button')
 menu.id = 'menu'
 menu.ariaLabel = 'Open navigation'
@@ -74,22 +87,6 @@ brand.ariaLabel = 'Tauritube'
 brand.querySelector('strong')!.textContent = 'Tauritube'
 document.title = 'Tauritube'
 brand.before(menu)
-const updateButton = document.createElement('button')
-updateButton.id = 'update'
-updateButton.ariaLabel = 'Install update'
-updateButton.title = 'Install update'
-const updateIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-updateIcon.setAttribute('viewBox', '0 0 24 24')
-updateIcon.setAttribute('aria-hidden', 'true')
-const updatePath = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-updatePath.setAttribute('d', 'M19 9h-4V3H9v6H5l7 7 7-7zm-14 9v2h14v-2z')
-updateIcon.append(updatePath)
-updateButton.append(updateIcon)
-updateButton.disabled = true
-brand.after(updateButton)
-function showUpdate(version: string) { updateButton.disabled = false; updateButton.title = `Install update ${version}` }
-updateButton.addEventListener('click', async () => { updateButton.disabled = true; updateButton.title = 'Installing update'; try { await invoke('do_update') } catch (error) { updateButton.disabled = false; updateButton.title = 'Update failed'; status.textContent = String(error) } })
-void listen<string>('update-available', event => showUpdate(event.payload))
 const playerDragZone = document.createElement('div')
 playerDragZone.id = 'player-drag-zone'
 document.querySelector('main')!.append(playerDragZone)
@@ -103,7 +100,7 @@ miniRestore.ariaLabel = 'Return to player'
 miniRestore.textContent = '↗'
 document.querySelector('main')!.append(miniRestore)
 
-type SearchResult = { id: string, title: string, channel: string, channel_id: string, duration: string, thumbnail: string }
+type SearchResult = { id: string, title: string, channel: string, channel_id: string, duration: string, thumbnail: string, published: string, is_short: boolean }
 type SearchPage = { results: SearchResult[], cursor?: string }
 type PlaylistTrack = { query: string, result?: SearchResult, candidates?: SearchResult[] }
 type Playlist = { name: string, tracks: PlaylistTrack[] }
@@ -121,6 +118,13 @@ const playlistsKey = 'youtube-tauri-playlists'
 let playlists: Playlist[] = (() => { try { const value = JSON.parse(localStorage.getItem(playlistsKey) || '[]'); return Array.isArray(value) ? value.filter(item => typeof item?.name === 'string' && Array.isArray(item.tracks)).map(item => ({ name: item.name, tracks: item.tracks.filter((track: PlaylistTrack) => typeof track?.query === 'string').map((track: PlaylistTrack) => ({ query: track.query, result: track.result })) })) : [] } catch { return [] } })()
 
 function savePlaylists() { localStorage.setItem(playlistsKey, JSON.stringify(playlists.map(playlist => ({ name: playlist.name, tracks: playlist.tracks.map(track => ({ query: track.query, result: track.result })) })))) }
+
+type AppSettings = { autoPlayRelated: boolean, reduceMotion: boolean, showPublishDates: boolean }
+const settingsKey = 'tauritube-settings'
+let settings: AppSettings = (() => { try { const value = JSON.parse(localStorage.getItem(settingsKey) || '{}'); return { autoPlayRelated: value?.autoPlayRelated === true, reduceMotion: value?.reduceMotion === true, showPublishDates: value?.showPublishDates !== false } } catch { return { autoPlayRelated: false, reduceMotion: false, showPublishDates: true } } })()
+function saveSettings() { localStorage.setItem(settingsKey, JSON.stringify(settings)) }
+function applySettings() { document.body.classList.toggle('reduce-motion', settings.reduceMotion); document.body.classList.toggle('hide-publish-dates', !settings.showPublishDates) }
+applySettings()
 
 function remember(result?: SearchResult) {
   if (!result) return
@@ -153,6 +157,8 @@ function embedUrl(value: string): string | null {
   player.searchParams.set('modestbranding', '1')
   player.searchParams.set('playsinline', '1')
   player.searchParams.set('iv_load_policy', '3')
+  player.searchParams.set('enablejsapi', '1')
+  player.searchParams.set('origin', location.origin)
   const list = url.searchParams.get('list')
   if (list) player.searchParams.set('list', list)
   return player.toString()
@@ -205,15 +211,15 @@ function updatePagination() {
 }
 
 function isBlocked(result: SearchResult) { return blocked.some(item => item.kind === 'video' && item.value === result.id || item.kind === 'channel' && (item.value === result.channel_id || item.value.toLowerCase() === result.channel.toLowerCase() || item.label?.toLowerCase() === result.channel.toLowerCase())) }
-function isShort(result: SearchResult) { return result.title === 'YouTube Short' }
+function isShort(result: SearchResult) { return result.is_short || result.title === 'YouTube Short' }
 
 async function blockCurrent(kind: 'video' | 'channel', videoId: string, channel: string, channelId: string) {
   if (blocking) return
   blocking = true
   try {
     const current = activeShort || activeResult
-    if (kind === 'video') { await invoke('block_video', { id: videoId, label: current?.title, thumbnail: current?.thumbnail }); if (!blocked.some(item => item.kind === kind && item.value === videoId)) blocked.push({ kind, value: videoId, label: current?.title || videoId, thumbnail: current?.thumbnail }) }
-    else { if (!channel && !channelId) return; await invoke('block_channel', { channel, channelId, thumbnail: current?.thumbnail }); const value = channelId || channel; if (!blocked.some(item => item.kind === kind && (item.value === value || item.label?.toLowerCase() === channel.toLowerCase()))) blocked.push({ kind, value, label: channel, thumbnail: current?.thumbnail }) }
+    if (kind === 'video') { await invoke('block_video', { id: videoId, label: current?.title, thumbnail: current?.thumbnail }); showToast(`Blocked ${current?.title || 'video'}`); if (!blocked.some(item => item.kind === kind && item.value === videoId)) blocked.push({ kind, value: videoId, label: current?.title || videoId, thumbnail: current?.thumbnail }) }
+    else { if (!channel && !channelId) return; await invoke('block_channel', { channel, channelId, thumbnail: current?.thumbnail }); showToast(`Blocked ${channel || 'channel'}`); const value = channelId || channel; if (!blocked.some(item => item.kind === kind && (item.value === value || item.label?.toLowerCase() === channel.toLowerCase()))) blocked.push({ kind, value, label: channel, thumbnail: current?.thumbnail }) }
     await loadShorts()
   } finally { blocking = false }
 }
@@ -269,7 +275,10 @@ function showResults(results: SearchResult[], historyView = false, homeView = fa
     const meta = document.createElement('small')
     meta.textContent = `${result.channel}${result.duration ? ` · ${result.duration}` : ''}`
     details.append(title, meta)
-    card.append(image, details)
+    card.append(image)
+    if (isShort(result)) { const badge = document.createElement('span'); badge.className = 'result-short-badge'; badge.textContent = 'Shorts'; card.append(badge) }
+    if (result.published) { const published = document.createElement('small'); published.className = 'result-published'; published.textContent = result.published; card.append(published) }
+    card.append(details)
     card.addEventListener('click', () => play(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(result.id)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`, result))
     const actions = document.createElement('div')
     actions.className = 'result-actions'
@@ -284,7 +293,7 @@ function showResults(results: SearchResult[], historyView = false, homeView = fa
     subscribe.textContent = '☆'
     subscribe.ariaLabel = 'Subscribe to channel'
     subscribe.title = 'Subscribe to channel'
-    subscribe.addEventListener('click', async event => { event.stopPropagation(); await invoke('subscribe_channel', { channel: result.channel, channelId: result.channel_id }); renderNavigation() })
+    subscribe.addEventListener('click', async event => { event.stopPropagation(); await invoke('subscribe_channel', { channel: result.channel, channelId: result.channel_id }); showToast(`Subscribed to ${result.channel || 'channel'}`); renderNavigation() })
     const block = document.createElement('button')
     block.className = 'result-block'
     block.textContent = '⊘'
@@ -294,11 +303,11 @@ function showResults(results: SearchResult[], historyView = false, homeView = fa
     blockMenu.className = 'result-block-menu'
     const blockVideo = document.createElement('button')
     blockVideo.textContent = 'Block video'
-    blockVideo.addEventListener('click', async event => { event.stopPropagation(); await invoke('block_video', { id: result.id, label: result.title, thumbnail: result.thumbnail }); blocked.push({ kind: 'video', value: result.id, label: result.title, thumbnail: result.thumbnail }); showResults(lastResults, historyView, homeView) })
+    blockVideo.addEventListener('click', async event => { event.stopPropagation(); await invoke('block_video', { id: result.id, label: result.title, thumbnail: result.thumbnail }); showToast(`Blocked ${result.title || 'video'}`); blocked.push({ kind: 'video', value: result.id, label: result.title, thumbnail: result.thumbnail }); showResults(lastResults, historyView, homeView) })
     const blockChannel = document.createElement('button')
     blockChannel.textContent = 'Block channel'
     blockChannel.disabled = !result.channel && !result.channel_id
-    blockChannel.addEventListener('click', async event => { event.stopPropagation(); await invoke('block_channel', { channel: result.channel, channelId: result.channel_id, thumbnail: result.thumbnail }); blocked.push({ kind: 'channel', value: result.channel_id || result.channel, label: result.channel, thumbnail: result.thumbnail }); if (homeView) await loadHome(); else showResults(lastResults, historyView, homeView) })
+    blockChannel.addEventListener('click', async event => { event.stopPropagation(); await invoke('block_channel', { channel: result.channel, channelId: result.channel_id, thumbnail: result.thumbnail }); showToast(`Blocked ${result.channel || 'channel'}`); blocked.push({ kind: 'channel', value: result.channel_id || result.channel, label: result.channel, thumbnail: result.thumbnail }); if (homeView) await loadHome(); else showResults(lastResults, historyView, homeView) })
     block.addEventListener('click', event => { event.stopPropagation(); blockMenu.classList.toggle('open') })
     blockMenu.append(blockVideo, blockChannel)
     actions.append(add, subscribe, block, blockMenu)
@@ -624,8 +633,86 @@ function showBlocked() {
   status.textContent = 'Blocked'
 }
 
+function settingsRow(icon: string, title: string, description: string, checked: boolean, onChange: (value: boolean) => void) {
+  const row = document.createElement('label')
+  row.className = 'setting-row'
+  const iconElement = document.createElement('span')
+  iconElement.className = 'setting-icon'
+  iconElement.textContent = icon
+  const copy = document.createElement('span')
+  copy.className = 'setting-copy'
+  const label = document.createElement('b')
+  label.textContent = title
+  const details = document.createElement('small')
+  details.textContent = description
+  copy.append(label, details)
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.checked = checked
+  input.ariaLabel = title
+  const toggle = document.createElement('span')
+  toggle.className = 'setting-switch'
+  input.addEventListener('change', () => { onChange(input.checked); saveSettings(); applySettings() })
+  row.append(iconElement, copy, input, toggle)
+  return row
+}
+
+function showSettings() {
+  setCurrentView(showSettings)
+  document.body.classList.remove('playing', 'chrome-visible')
+  document.body.classList.add('browsing')
+  const view = document.createElement('section')
+  view.id = 'settings-view'
+  const hero = document.createElement('header')
+  hero.className = 'settings-hero'
+  const kicker = document.createElement('small')
+  kicker.className = 'settings-kicker'
+  kicker.textContent = 'TAURITUBE / PREFERENCES'
+  const title = document.createElement('h1')
+  title.textContent = 'Settings'
+  const description = document.createElement('p')
+  description.textContent = 'Tune playback and presentation to feel right for you.'
+  hero.append(kicker, title, description)
+  const section = (titleText: string, descriptionText: string, rows: HTMLElement[]) => {
+    const sectionElement = document.createElement('section')
+    const heading = document.createElement('header')
+    const headingTitle = document.createElement('h2')
+    headingTitle.textContent = titleText
+    const headingDescription = document.createElement('p')
+    headingDescription.textContent = descriptionText
+    heading.append(headingTitle, headingDescription)
+    const card = document.createElement('div')
+    card.className = 'settings-card'
+    card.append(...rows)
+    sectionElement.append(heading, card)
+    return sectionElement
+  }
+  const playback = settingsRow('▶', 'Auto play related videos', 'When the current video ends and the queue is empty, continue with a related result.', settings.autoPlayRelated, value => { settings.autoPlayRelated = value; showToast(value ? 'Auto play related videos enabled' : 'Auto play related videos disabled') })
+  const motion = settingsRow('✦', 'Reduce motion', 'Use fewer transitions and animated effects throughout the app.', settings.reduceMotion, value => { settings.reduceMotion = value; showToast(value ? 'Reduced motion enabled' : 'Reduced motion disabled') })
+  const dates = settingsRow('◷', 'Show publish dates', 'Display relative publish dates on video cards.', settings.showPublishDates, value => { settings.showPublishDates = value; showToast(value ? 'Publish dates shown' : 'Publish dates hidden') })
+  const footnote = document.createElement('small')
+  footnote.className = 'settings-footnote'
+  footnote.textContent = 'Your preferences are saved on this device.'
+  view.append(hero, section('Playback', 'Control what happens when a video finishes.', [playback]), section('Appearance', 'Keep the interface comfortable at any size.', [motion, dates]), footnote)
+  stage.replaceChildren(view)
+  stage.scrollTop = 0
+  status.textContent = 'Settings'
+}
+
 async function renderNavigation() {
   navPanel.replaceChildren()
+  const resize = document.createElement('div')
+  resize.id = 'nav-resize'
+  resize.role = 'separator'
+  resize.tabIndex = 0
+  resize.ariaOrientation = 'vertical'
+  resize.setAttribute('aria-label', 'Resize navigation panel')
+  resize.setAttribute('aria-valuemin', '220')
+  resize.setAttribute('aria-valuemax', '420')
+  resize.setAttribute('aria-valuenow', String(navWidth))
+  resize.addEventListener('pointerdown', event => { if (event.button !== 0) return; resizingNav = true; document.body.classList.add('resizing-nav'); resize.setPointerCapture(event.pointerId); event.preventDefault() })
+  resize.addEventListener('keydown', event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { setNavWidth(navWidth + (event.key === 'ArrowRight' ? 10 : -10)); event.preventDefault() } })
+  navPanel.append(resize)
   const navIcons: Record<string, string> = {
     Home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11.485 2.143-8 4.8-2 1.2a1 1 0 001.03 1.714L3 9.567V20a2 2 0 002 2h5v-8h4v8h5a2 2 0 002-2V9.567l.485.29a1 1 0 001.03-1.714l-2-1.2-8-4.8a1 1 0 00-1.03 0Z"></path></svg>',
     Shorts: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13.467 1.19-8 4.7a5 5 0 00-.255 8.46 5 5 0 005.32 8.462l8-4.7a5 5 0 00.258-8.462 5 5 0 001.641-6.464l-.12-.217a5 5 0 00-6.844-1.78m5.12 2.79a2.999 2.999 0 01-1.067 4.107l-1.327.78a1 1 0 00.096 1.775l.943.423a3 3 0 01.288 5.323l-8 4.7a3 3 0 01-3.039-5.173l1.327-.78a1 1 0 00-.097-1.775l-.942-.423a3 3 0 01-.288-5.323l8-4.7a3 3 0 014.106 1.066ZM15 12l-5-3v6l5-3Z"></path></svg>',
@@ -633,17 +720,16 @@ async function renderNavigation() {
     You: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1C5.925 1 1 5.925 1 12s4.925 11 11 11 11-4.925 11-11S18.075 1 12 1Zm0 2a9 9 0 016.447 15.276 7 7 0 00-12.895 0A9 9 0 0112 3Zm0 2a4 4 0 100 8 4 4 0 000-8Zm0 2a2 2 0 110 4 2 2 0 010-4Zm-.1 9.001L11.899 16a5 5 0 014.904 3.61A8.96 8.96 0 0112 21a8.96 8.96 0 01-4.804-1.391 5 5 0 014.704-3.608Z"></path></svg>'
   }
   const action = (label: string, icon: string, handler: () => void) => { const button = document.createElement('button'); button.className = 'nav-action'; button.innerHTML = `<span aria-hidden="true">${navIcons[label] || icon}</span>${label}`; button.addEventListener('click', handler); return button }
-  const closeNavigation = () => { navPanel.classList.remove('open'); navScrim.classList.remove('open') }
-  const home = action('Home', '⌂', () => { closeNavigation(); loadHome() })
-  const shorts = action('Shorts', '▷', () => { closeNavigation(); loadShorts() })
+  const home = action('Home', '⌂', () => { loadHome() })
+  const shorts = action('Shorts', '▷', () => { loadShorts() })
   const historyButton = action('History', '↶', () => {
-    closeNavigation()
     if (!history.length) { stage.replaceChildren(); status.textContent = 'No history yet'; return }
     showResults(history, true)
     status.textContent = 'History'
   })
-  const playlistsButton = action('Playlists', '♫', () => { closeNavigation(); showPlaylists() })
-  const blockedButton = action('Blocked', '⊘', () => { closeNavigation(); showBlocked() })
+  const playlistsButton = action('Playlists', '♫', () => { showPlaylists() })
+  const blockedButton = action('Blocked', '⊘', () => { showBlocked() })
+  const settingsButton = action('Settings', '⚙', () => { showSettings() })
   const library = document.createElement('b')
   library.textContent = 'You'
   const heading = document.createElement('div')
@@ -651,7 +737,7 @@ async function renderNavigation() {
   const headingLabel = document.createElement('b')
   headingLabel.textContent = 'Subscriptions'
   heading.append(headingLabel)
-  navPanel.append(home, shorts, library, historyButton, playlistsButton, blockedButton, heading)
+  navPanel.append(home, shorts, settingsButton, library, historyButton, playlistsButton, blockedButton, heading)
   try {
     const subscriptions = await invoke<{ channel: string, channel_id: string, avatar: string }[]>('list_subscriptions')
     const exportButton = document.createElement('button')
@@ -680,7 +766,7 @@ async function renderNavigation() {
       text.placeholder = 'Paste an exported subscription list or one channel per line'
       const apply = document.createElement('button')
       apply.textContent = 'Import'
-      apply.addEventListener('click', async () => { try { const parsed = JSON.parse(text.value); const items = Array.isArray(parsed) ? parsed : []; for (const entry of items) { const item = typeof entry === 'string' ? { channel: entry } : entry; if (typeof item?.channel === 'string' && item.channel.trim()) await invoke('subscribe_channel', { channel: item.channel.trim(), channelId: item.channel_id || '', avatar: item.avatar || undefined }) } await renderNavigation() } catch { const items = text.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean); for (const channel of items) await invoke('subscribe_channel', { channel, channelId: '' }); await renderNavigation() } })
+      apply.addEventListener('click', async () => { try { const parsed = JSON.parse(text.value); const items = Array.isArray(parsed) ? parsed : []; for (const entry of items) { const item = typeof entry === 'string' ? { channel: entry } : entry; if (typeof item?.channel === 'string' && item.channel.trim()) { await invoke('subscribe_channel', { channel: item.channel.trim(), channelId: item.channel_id || '', avatar: item.avatar || undefined }); showToast(`Subscribed to ${item.channel.trim()}`) } } await renderNavigation() } catch { const items = text.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean); for (const channel of items) { await invoke('subscribe_channel', { channel, channelId: '' }); showToast(`Subscribed to ${channel}`) } await renderNavigation() } })
       panel.append(text, apply)
       heading.after(panel)
     })
@@ -696,7 +782,7 @@ async function renderNavigation() {
       if (!item.avatar) void invoke<string>('load_subscription_avatar', { channel: item.channel, channelId: item.channel_id }).then(setAvatar).catch(() => {})
       const channel = document.createElement('button')
       channel.textContent = item.channel
-      channel.addEventListener('click', () => { closeNavigation(); loadChannelVideos(item) })
+      channel.addEventListener('click', () => { loadChannelVideos(item) })
       const remove = document.createElement('button')
       remove.textContent = '×'
       remove.ariaLabel = `Remove ${item.channel}`
@@ -718,7 +804,20 @@ async function renderNavigation() {
   } catch {}
 }
 
-function playNext() { const next = queue.shift(); if (next) { renderQueue(); play(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(next.id)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`, next) } }
+async function playRelated() {
+  const current = activeResult
+  if (!settings.autoPlayRelated || !current || relatedLoading) return
+  relatedLoading = true
+  try {
+    const query = current.channel ? `${current.title} ${current.channel}` : current.title
+    const page = await invoke<SearchPage>('search_youtube', { query })
+    const next = page.results.find(result => result.id !== current.id && !isBlocked(result) && !isShort(result))
+    if (!next || activeResult?.id !== current.id) return
+    await preloadThumbnails([next])
+    play(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(next.id)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`, next)
+  } catch {} finally { relatedLoading = false }
+}
+function playNext() { const next = queue.shift(); if (next) { renderQueue(); play(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(next.id)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`, next) } else void playRelated() }
 
 async function loadMore() {
   if (!nextCursor || loadingMore) return
@@ -776,7 +875,16 @@ function mixHomeResults(groups: SearchResult[][]) {
   const seen = new Set<string>()
   for (let index = 0; groups.some(group => index < group.length); index++) for (const group of groups) {
     const result = group[index]
-    if (result && !seen.has(result.id)) { seen.add(result.id); results.push(result) }
+    if (!result) continue
+    if (seen.has(result.id)) {
+      const existing = results.find(item => item.id === result.id)
+      if (existing) {
+        if ((!existing.channel || /views|watching|ago/i.test(existing.channel)) && result.channel && !/views|watching|ago/i.test(result.channel)) existing.channel = result.channel
+        if (!existing.channel_id && result.channel_id) existing.channel_id = result.channel_id
+        if (!existing.published && result.published) existing.published = result.published
+        if (!existing.duration && result.duration) existing.duration = result.duration
+      }
+    } else { seen.add(result.id); results.push(result) }
   }
   return results
 }
@@ -891,7 +999,7 @@ window.addEventListener('message', event => {
   if (playerBridge && event.data?.action === 'block-channel') { void blockCurrent('channel', '', event.data.channel || activeShort?.channel || '', event.data.channelId || activeShort?.channel_id || ''); return }
   if (playerBridge && event.data?.action === 'input-lock') { playerInputLocked = Boolean(event.data.locked); invoke('set_input_lock', { locked: playerInputLocked }); return }
   if (event.origin !== 'https://www.youtube-nocookie.com') return
-  try { const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; if (message?.event === 'onStateChange' && message.info === 0) playNext() } catch {}
+  try { const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; if (event.source === activeFrame?.contentWindow && message?.event === 'onStateChange' && message.info === 0) playNext() } catch {}
 })
 window.addEventListener('blur', () => { if (playerInputLocked) invoke('set_input_lock', { locked: false }) })
 window.addEventListener('focus', () => { if (playerInputLocked) invoke('set_input_lock', { locked: true }) })

@@ -17,7 +17,7 @@ npm run app
 npm run build
 ```
 
-Installers are written to `src-tauri\target\release\bundle`.
+The standalone executable is written to `src-tauri\target\release`.
 
 ## License
 

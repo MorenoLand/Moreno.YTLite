@@ -8,6 +8,7 @@
     "app": "tauri dev",
     "frontend:build": "tsc && vite build",
     "build": "tauri build",
+    "build:local": "tauri build --config src-tauri/tauri.local.conf.json",
     "tauri:build": "tauri build",
     "tauri": "tauri"
   },
