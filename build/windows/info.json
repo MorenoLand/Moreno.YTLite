@@ -1,0 +1,15 @@
+{
+  "fixed": {
+    "file_version": "0.1.0"
+  },
+  "info": {
+    "0000": {
+      "ProductVersion": "0.1.0",
+      "CompanyName": "MorenoLand",
+      "FileDescription": "YTLite",
+      "LegalCopyright": "(c) 2026, MorenoLand",
+      "ProductName": "YTLite",
+      "Comments": "A lightweight YouTube desktop player"
+    }
+  }
+}

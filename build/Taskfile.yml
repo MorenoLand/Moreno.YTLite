@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  go:mod:tidy:
+    summary: Runs go mod tidy
+    internal: true
+    cmds:
+      - go mod tidy
+
+  install:frontend:deps:
+    summary: Installs frontend dependencies
+    dir: frontend
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules/**/*
+    cmds:
+      - npm ci
+
+  generate:bindings:
+    summary: Generates TypeScript bindings
+    deps:
+      - task: go:mod:tidy
+    cmds:
+      - wails3 generate bindings -ts -clean
+
+  build:frontend:
+    summary: Builds the frontend
+    dir: frontend
+    deps:
+      - task: install:frontend:deps
+      - task: generate:bindings
+    cmds:
+      - npm run {{if eq .PRODUCTION "true"}}build{{else}}build:dev{{end}}
+
+  dev:frontend:
+    summary: Runs the frontend development server
+    dir: frontend
+    deps:
+      - task: install:frontend:deps
+    cmds:
+      - npm run dev

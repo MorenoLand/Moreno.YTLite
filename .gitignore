@@ -1,10 +1,12 @@
 node_modules/
 target/
 src-tauri/target/
+bin/
+.task/
+*.syso
 dist/
 release/
 *.pdb
 *.exe
 *.dmp
 *.bak
-src-tauri/tauritube-updater.key

@@ -1,0 +1,52 @@
+version: '3'
+
+includes:
+  common: ../Taskfile.yml
+
+tasks:
+  build:
+    summary: Builds the application for Windows
+    deps:
+      - task: common:go:mod:tidy
+      - task: common:build:frontend
+        vars:
+          PRODUCTION:
+            ref: .PRODUCTION
+      - task: generate:syso
+    cmds:
+      - go build {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.APP_NAME}}.exe
+      - '{{if and (eq .PRODUCTION "true") (eq .COMPRESS "true")}}upx {{.UPX_FLAGS}} "{{.BIN_DIR}}/{{.APP_NAME}}.exe"{{else}}echo UPX compression skipped for this build{{end}}'
+      - cmd: powershell -NoProfile -Command "Remove-Item -LiteralPath '*.syso' -Force -ErrorAction SilentlyContinue"
+        platforms: [windows]
+      - cmd: rm -f *.syso
+        platforms: [linux, darwin]
+    vars:
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui"{{else}}-buildvcs=false -gcflags=all="-l"{{end}}'
+      BIN_DIR: '{{.BIN_DIR | default "bin"}}'
+      APP_NAME: '{{.APP_NAME | default "ytlite"}}'
+    env:
+      GOOS: windows
+      CGO_ENABLED: 0
+      GOARCH: '{{.ARCH | default "amd64"}}'
+      PRODUCTION: '{{.PRODUCTION | default "false"}}'
+      COMPRESS: '{{.COMPRESS | default "true"}}'
+      UPX_FLAGS: '{{.UPX_FLAGS | default "--best --lzma --force"}}'
+
+  package:
+    summary: Creates the production Windows executable
+    cmds:
+      - task: build
+        vars:
+          PRODUCTION: "true"
+
+  generate:syso:
+    summary: Embeds Windows icon and version resources
+    dir: build
+    cmds:
+      - wails3 generate syso -arch {{.ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../ytlite_windows_{{.ARCH}}.syso
+    vars:
+      ARCH: '{{.ARCH | default "amd64"}}'
+
+  run:
+    cmds:
+      - '{{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "ytlite"}}.exe'

@@ -1,8 +1,8 @@
-name: Build Tauritube
+name: Build YTLite
 
 on:
   push:
-    branches: [main]
+    branches: [features/wails3]
   workflow_dispatch:
 
 permissions:
@@ -14,82 +14,63 @@ concurrency:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - name: Windows x64
-            runner: windows-latest
-            target: x86_64-pc-windows-msvc
-
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    name: Windows x64
+    runs-on: windows-latest
     timeout-minutes: 60
-
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref_name }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
+        working-directory: frontend
         run: npm ci
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install Wails3 CLI
+        shell: pwsh
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.11
+          (Join-Path (go env GOPATH) 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install UPX
+        shell: pwsh
+        run: |
+          if (-not (Get-Command upx -ErrorAction SilentlyContinue)) {
+            choco install upx -y --no-progress
+          }
+
+      - name: Build Wails3 application
+        run: wails3 build GOOS=windows ARCH=amd64 PRODUCTION=true
 
       - name: Resolve release version
         id: release
-        shell: bash
+        shell: pwsh
         run: |
-          version="$(node -p "require('./package.json').version")"
-          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          cargo_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' src-tauri/Cargo.toml | head -1)"
-          if [ "$version" != "$tauri_version" ] || [ "$version" != "$cargo_version" ]; then
-            echo "Version mismatch: package=$version tauri=$tauri_version cargo=$cargo_version"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          $version = node -p "require('./frontend/package.json').version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Build and publish Tauri app
-        uses: tauri-apps/tauri-action@v0
+      - name: Publish Windows executable
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v${{ steps.release.outputs.version }}
-          releaseName: Tauritube v${{ steps.release.outputs.version }}
-          releaseBody: Automated build from ${{ github.sha }}.
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          args: --target ${{ matrix.target }}
-
-      - name: Upload portable executable
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        shell: bash
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          exe="$(find "src-tauri/target/${{ matrix.target }}/release" -maxdepth 1 -type f -name 'tauritube.exe' | head -1)"
-          if [ -n "$exe" ]; then gh release upload "v${{ steps.release.outputs.version }}" "$exe#tauritube.exe" --clobber; fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          $tag = "v${{ steps.release.outputs.version }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag bin/ytlite.exe --clobber
+          } else {
+            gh release create $tag bin/ytlite.exe --title "YTLite v${{ steps.release.outputs.version }}" --notes "Automated Wails3 build from ${{ github.sha }}."
+          }
