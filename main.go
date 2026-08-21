@@ -72,7 +72,7 @@ func main() {
 		Frameless:                  true,
 		InitialPosition:            application.WindowCentered,
 		HTML:                       frontendBootstrapHTML(),
-		JS:                         playerGuard,
+		JS:                         playerGuard + "\n" + channelLinkGuard,
 		DefaultContextMenuDisabled: true,
 	})
 	menu.Add("Show / Hide").OnClick(func(*application.Context) { toggleWindow(window) })
