@@ -25,7 +25,7 @@ updateClearButton()
 const stage = document.querySelector<HTMLElement>('#stage')!
 const status = document.querySelector<HTMLElement>('#status')!
 const chrome = document.querySelector<HTMLElement>('#chrome')!
-chrome.setAttribute('data-ytlite-drag-region', '')
+chrome.style.setProperty('--wails-draggable', 'drag')
 const sidebarPlayerStyle = document.createElement('style')
 sidebarPlayerStyle.textContent = '.playing main:has(#nav-panel.open) #chrome{display:flex!important;transform:none;opacity:1;pointer-events:auto}.playing main:has(#nav-panel.open) #stage,body.browsing main:has(#nav-panel.open) #stage{position:absolute;inset:64px 0 0 var(--nav-width);width:auto;height:auto;margin:0}'
 document.head.append(sidebarPlayerStyle)
