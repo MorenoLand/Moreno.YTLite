@@ -278,6 +278,7 @@ function showResults(results: SearchResult[], historyView = false, homeView = fa
     image.decoding = 'async'
     image.setAttribute('fetchpriority', 'low')
     const details = document.createElement('span')
+    details.className = 'result-details'
     const title = document.createElement('b')
     title.textContent = result.title
     const meta = document.createElement('small')
