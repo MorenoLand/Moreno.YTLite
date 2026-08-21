@@ -4,6 +4,8 @@
 .playing #chrome, .playing #reveal-zone { display: none !important; }
 #status, #status:empty { width: 44px; flex: 0 0 44px; text-align: center; }
 #results, .result { contain: none !important; content-visibility: visible !important; contain-intrinsic-size: auto !important; }
+.result-channel { margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; text-align: left; }
+.result-channel:hover { color: #fff; text-decoration: underline; }
 #chrome { position: absolute !important; contain: layout paint; background: #0a0a0a !important; box-shadow: none !important; transition: none !important; -webkit-app-region: no-drag !important; } #stage { contain: strict; overscroll-behavior: contain; } #results { contain: layout paint !important; content-visibility: visible !important; } .result { contain: layout paint style !important; content-visibility: visible !important; contain-intrinsic-size: auto !important; }
 #player-drag-zone { display: none !important; }
 .window-resize-handle { position: fixed; z-index: 2147483647; pointer-events: auto; background: transparent; }

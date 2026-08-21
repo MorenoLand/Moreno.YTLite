@@ -281,7 +281,15 @@ function showResults(results: SearchResult[], historyView = false, homeView = fa
     const title = document.createElement('b')
     title.textContent = result.title
     const meta = document.createElement('small')
-    meta.textContent = `${result.channel}${result.duration ? ` · ${result.duration}` : ''}`
+    if (result.channel) {
+      const channel = document.createElement('button')
+      channel.className = 'result-channel'
+      channel.type = 'button'
+      channel.textContent = result.channel
+      channel.addEventListener('click', event => { event.stopPropagation(); loadChannelVideos({ channel: result.channel, channel_id: result.channel_id }) })
+      meta.append(channel)
+    }
+    if (result.duration) { const duration = document.createElement('span'); duration.textContent = `${result.channel ? ' · ' : ''}${result.duration}`; meta.append(duration) }
     details.append(title, meta)
     card.append(image)
     if (isShort(result)) { const badge = document.createElement('span'); badge.className = 'result-short-badge'; badge.textContent = 'Shorts'; card.append(badge) }
