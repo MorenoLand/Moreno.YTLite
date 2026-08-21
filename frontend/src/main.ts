@@ -91,6 +91,12 @@ const playerDragZone = document.createElement('div')
 playerDragZone.id = 'player-drag-zone'
 document.querySelector('main')!.append(playerDragZone)
 playerDragZone.addEventListener('mousedown', event => { if (event.button === 0) invoke('drag_window') })
+for (const edge of ['top', 'right', 'bottom', 'left'] as const) {
+  const handle = document.createElement('div')
+  handle.className = `window-resize-handle ${edge}`
+  handle.setAttribute('aria-hidden', 'true')
+  document.querySelector('main')!.append(handle)
+}
 const miniPlayer = document.createElement('section')
 miniPlayer.id = 'mini-player'
 document.querySelector('main')!.append(miniPlayer)

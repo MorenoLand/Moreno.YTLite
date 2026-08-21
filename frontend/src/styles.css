@@ -6,6 +6,11 @@
 #results, .result { contain: none !important; content-visibility: visible !important; contain-intrinsic-size: auto !important; }
 #chrome { position: absolute !important; contain: layout paint; background: #0a0a0a !important; box-shadow: none !important; transition: none !important; -webkit-app-region: no-drag !important; } #stage { contain: strict; overscroll-behavior: contain; } #results { contain: layout paint !important; content-visibility: visible !important; } .result { contain: layout paint style !important; content-visibility: visible !important; contain-intrinsic-size: auto !important; }
 #player-drag-zone { display: none !important; }
+.window-resize-handle { position: fixed; z-index: 2147483647; pointer-events: auto; background: transparent; }
+.window-resize-handle.top { top: 0; right: 0; left: 0; height: 10px; cursor: ns-resize; }
+.window-resize-handle.right { top: 0; right: 0; bottom: 0; width: 10px; cursor: ew-resize; }
+.window-resize-handle.bottom { right: 0; bottom: 0; left: 0; height: 10px; cursor: ns-resize; }
+.window-resize-handle.left { top: 0; bottom: 0; left: 0; width: 10px; cursor: ew-resize; }
 #chrome #search-field, #chrome > #go { height: 40px !important; }
 body.browsing #stage { position: absolute; inset: 62px 0 0; width: 100vw; height: auto; margin: 0; } body.browsing #results { padding-top: 18px; } body.browsing #shorts-viewer { padding-top: 18px; } body.browsing #block-list, body.browsing #playlists, body.browsing #playlist-import, body.browsing #playlist-editor { padding-top: 26px; }
 #mini-player { display: none; position: fixed; z-index: 40; right: 18px; bottom: 18px; width: min(420px, 34vw); aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid rgba(255,255,255,.22); border-radius: 9px; background: #000; box-shadow: 0 14px 42px rgba(0,0,0,.62); } .mini-playing #mini-player { display: block; } #mini-player iframe { position: absolute; inset: 0; width: 100%; height: 100%; }

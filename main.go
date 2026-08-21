@@ -68,6 +68,7 @@ func main() {
 		Height:                     720,
 		MinWidth:                   640,
 		MinHeight:                  400,
+		DisableResize:              false,
 		Frameless:                  true,
 		InitialPosition:            application.WindowCentered,
 		HTML:                       frontendBootstrapHTML(),
@@ -78,8 +79,8 @@ func main() {
 	menu.Add("Quit").OnClick(func(*application.Context) { app.Quit() })
 	tray := app.SystemTray.New()
 	tray.SetTooltip("YTLite")
-	tray.SetIcon(trayIcon).SetMenu(menu).AttachWindow(window).WindowOffset(0)
-	tray.OnClick(func() { tray.ToggleWindow() })
+	tray.SetIcon(trayIcon).SetMenu(menu)
+	tray.OnClick(func() { toggleWindow(window) })
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { window.Hide(); event.Cancel() })
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
