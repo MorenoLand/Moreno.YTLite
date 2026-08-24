@@ -62,17 +62,21 @@ func main() {
 	})
 	menu := app.NewMenu()
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:                       "main",
-		Title:                      "YTLite",
-		Width:                      1280,
-		Height:                     720,
-		MinWidth:                   640,
-		MinHeight:                  400,
-		DisableResize:              false,
-		Frameless:                  true,
-		InitialPosition:            application.WindowCentered,
-		HTML:                       frontendBootstrapHTML(),
-		JS:                         playerGuard + "\n" + channelLinkGuard,
+		Name:            "main",
+		Title:           "YTLite",
+		Width:           1280,
+		Height:          720,
+		MinWidth:        640,
+		MinHeight:       400,
+		DisableResize:   false,
+		Frameless:       true,
+		InitialPosition: application.WindowCentered,
+		HTML:            frontendBootstrapHTML(),
+		JS:              playerGuard + "\n" + channelLinkGuard,
+		DevToolsEnabled: true,
+		KeyBindings: map[string]func(application.Window){
+			"F12": func(window application.Window) { window.OpenDevTools() },
+		},
 		DefaultContextMenuDisabled: true,
 	})
 	menu.Add("Show / Hide").OnClick(func(*application.Context) { toggleWindow(window) })
