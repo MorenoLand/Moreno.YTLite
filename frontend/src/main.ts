@@ -1,4 +1,11 @@
 import { invoke } from './api'
+document.documentElement.style.setProperty('user-select', 'none')
+document.documentElement.style.setProperty('-webkit-user-select', 'none')
+const selectionStyle = document.createElement('style')
+selectionStyle.textContent = 'html,body,body *{user-select:none!important;-webkit-user-select:none!important;-webkit-touch-callout:none!important;-webkit-user-drag:none!important}'
+document.head.append(selectionStyle)
+document.addEventListener('selectstart', event => { event.preventDefault(); event.stopImmediatePropagation() }, true)
+document.addEventListener('dragstart', event => { event.preventDefault(); event.stopImmediatePropagation() }, true)
 
 const input = document.querySelector<HTMLInputElement>('#query')!
 const clearButton = document.querySelector<HTMLButtonElement>('#clear')!
@@ -151,6 +158,8 @@ async function preloadThumbnails(results: SearchResult[]) {
   }))
 }
 
+function parseStartTime(value: string): number { const raw = value.trim().toLowerCase(); if (!raw) return 0; if (/^\d+(?:\.\d+)?$/.test(raw)) return Number(raw); const match = raw.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s?)?$/); if (!match || !match[0]) return 0; return Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) }
+
 function embedUrl(value: string): string | null {
   let url: URL
   try { url = new URL(value.includes('://') ? value : `https://${value}`) } catch { return null }
@@ -167,6 +176,8 @@ function embedUrl(value: string): string | null {
   player.searchParams.set('iv_load_policy', '3')
   player.searchParams.set('enablejsapi', '1')
   player.searchParams.set('origin', location.origin)
+  const start = parseStartTime(url.searchParams.get('t') || url.searchParams.get('start') || '')
+  if (start > 0) player.searchParams.set('start', String(Math.floor(start)))
   const list = url.searchParams.get('list')
   if (list) player.searchParams.set('list', list)
   return player.toString()
@@ -233,6 +244,8 @@ async function blockCurrent(kind: 'video' | 'channel', videoId: string, channel:
 }
 
 function showResults(results: SearchResult[], historyView = false, homeView = false) {
+  document.body.classList.remove('playing', 'chrome-visible')
+  document.body.classList.add('browsing')
   results = results.filter(result => !isBlocked(result) && (!homeView || !isShort(result)))
   lastResults = results
   setCurrentView(() => showResults(results, historyView, homeView))

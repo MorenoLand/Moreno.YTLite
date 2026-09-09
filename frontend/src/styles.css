@@ -82,3 +82,4 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 body.resizing-nav, body.resizing-nav * { cursor: ew-resize !important; user-select: none !important; }
 .playing main:has(#nav-panel.open) #stage { width: calc(100vw - var(--nav-width)); margin-left: var(--nav-width); }
 #chrome { --wails-draggable: drag !important; } #chrome > * { --wails-draggable: no-drag !important; }
+html, body, body * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-user-drag: none; } img, video, iframe { -webkit-user-drag: none; user-select: none; -webkit-user-select: none; }
